@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -8,43 +7,51 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
 
 # ------------------------------
-# Upload Dataset
+# Streamlit App UI
 # ------------------------------
 st.title("💳 Loan Default Prediction App")
-
 st.write("Upload your dataset and predict if a loan applicant will default or not.")
 
-# Add a clear heading and instructions for uploading the dataset
+# ------------------------------
+# File Upload
+# ------------------------------
 st.subheader("⬆️ Upload Your Dataset")
-st.write("Look for the file upload box below to select your CSV file.")
-uploaded_file = st.file_uploader("📂 Choose a CSV file from your system", type=["csv"])
+uploaded_file = st.file_uploader("📂 Choose a CSV file", type=["csv"])
 
 if uploaded_file is not None:
     data = pd.read_csv(uploaded_file)
     st.subheader("📊 Dataset Preview")
-    st.write("Here's a preview of the data you uploaded:")
     st.write(data.head())
+
+    st.sidebar.header("🔧 Model Settings")
+    target_col = st.sidebar.selectbox("Select Target Column (Default)", data.columns, index=len(data.columns)-1)
 
     # ------------------------------
     # Preprocessing
     # ------------------------------
-    st.sidebar.header("🔧 Model Settings")
-    target_col = st.sidebar.selectbox("Select Target Column (Default)", data.columns, index=len(data.columns)-1)
-
     X = data.drop(target_col, axis=1)
     y = data[target_col]
 
-    # Handle 'Yes'/'No' columns before encoding
-    for col in ['HasMortgage', 'HasCoSigner']:
-        if col in X.columns:
-            X[col] = X[col].map({'Yes': 1, 'No': 0})
+    # Encode target column if it's categorical
+    if y.dtype == 'object':
+        y = LabelEncoder().fit_transform(y)
+
+    # Handle missing values
+    X.fillna(X.median(numeric_only=True), inplace=True)
+
+    # Detect and map binary 'Yes'/'No' columns
+    binary_cols = [col for col in X.columns if sorted(X[col].dropna().unique().tolist()) == ['No', 'Yes']]
+    for col in binary_cols:
+        X[col] = X[col].map({'Yes': 1, 'No': 0})
 
     # Encode categorical columns
+    encoders = {}
     for col in X.select_dtypes(include=["object", "category"]).columns:
         le = LabelEncoder()
         X[col] = le.fit_transform(X[col])
+        encoders[col] = le  # Save encoder for later
 
-    # Scale features
+    # Feature Scaling
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
@@ -56,40 +63,46 @@ if uploaded_file is not None:
     # ------------------------------
     model = RandomForestClassifier(random_state=42)
     model.fit(X_train, y_train)
-
     y_pred = model.predict(X_test)
     accuracy = accuracy_score(y_test, y_pred)
 
-    st.write(f"✅ Model trained successfully! Accuracy: *{accuracy*100:.2f}%*")
+    st.write(f"✅ Model trained successfully! **Accuracy:** *{accuracy*100:.2f}%*")
 
     # ------------------------------
     # User Input
     # ------------------------------
     st.sidebar.header("📝 Enter Applicant Details")
-
     user_data = {}
+
     for col in X.columns:
-        if data[col].dtype in [np.int64, np.float64]:
-            user_data[col] = st.sidebar.number_input(f"{col}", float(data[col].min()), float(data[col].max()), float(data[col].mean()))
+        original_col = data[col] if col in data.columns else None
+
+        if col in binary_cols:
+            user_data[col] = st.sidebar.selectbox(f"{col}", ['Yes', 'No'])
+        elif original_col is not None and original_col.dtype in [np.int64, np.float64]:
+            user_data[col] = st.sidebar.number_input(
+                f"{col}", 
+                float(data[col].min()), 
+                float(data[col].max()), 
+                float(data[col].mean())
+            )
         else:
-            options = data[col].unique().tolist()
+            options = data[col].unique().tolist() if col in data.columns else []
             user_data[col] = st.sidebar.selectbox(f"{col}", options)
 
     user_df = pd.DataFrame([user_data])
 
-    # Handle 'Yes'/'No' columns in user input
-    for col in ['HasMortgage', 'HasCoSigner']:
-         if col in user_df.columns:
-             user_df[col] = user_df[col].map({'Yes': 1, 'No': 0})
+    # Handle binary columns
+    for col in binary_cols:
+        if col in user_df.columns:
+            user_df[col] = user_df[col].map({'Yes': 1, 'No': 0})
 
+    # Encode categorical features with stored encoders
+    for col, le in encoders.items():
+        if col in user_df.columns:
+            user_df[col] = le.transform([user_df[col][0]])
 
-    # Encode user input (for categorical features)
-    for col in user_df.select_dtypes(include=["object", "category"]).columns:
-        le = LabelEncoder()
-        user_df[col] = le.fit_transform(user_df[col])
-
-
-    # Scale input
+    # Feature scaling
     user_scaled = scaler.transform(user_df)
 
     # ------------------------------
@@ -99,10 +112,12 @@ if uploaded_file is not None:
     prediction_proba = model.predict_proba(user_scaled)
 
     st.subheader("🔮 Prediction Result")
-    result = "❌ Default" if prediction[0] == 1 else "✅ No Default"
-    st.write(f"*Prediction:* {result}")
+    if prediction[0] == 1:
+        st.error("❌ Prediction: Applicant is likely to **Default** on the loan.")
+    else:
+        st.success("✅ Prediction: Applicant is **Not Likely to Default** on the loan.")
 
     st.subheader("📈 Prediction Probability")
-    st.write(prediction_proba)
+    st.write(pd.DataFrame(prediction_proba, columns=["No Default", "Default"]))
 else:
-    st.info("👆 Please upload a CSV file to start.")
+    st.info("👆 Please upload a CSV file to begin.")
